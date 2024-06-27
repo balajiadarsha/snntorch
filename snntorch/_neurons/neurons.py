@@ -1,5 +1,4 @@
 from warnings import warn
-from snntorch.surrogate import atan
 import torch
 import torch.nn as nn
 
@@ -7,6 +6,8 @@ import torch.nn as nn
 __all__ = [
     "SpikingNeuron",
     "LIF",
+    "_SpikeTensor",
+    "_SpikeTorchConv",
 ]
 
 dtype = torch.float
@@ -25,7 +26,8 @@ class SpikingNeuron(nn.Module):
     reset_dict = {
         "subtract": 0,
         "zero": 1,
-        "none": 2,
+        "refractory": 2,
+        "none": 3,
     }
 
     def __init__(
@@ -41,18 +43,11 @@ class SpikingNeuron(nn.Module):
         output=False,
         graded_spikes_factor=1.0,
         learn_graded_spikes_factor=False,
+        refractory_factor=1,
     ):
-        super().__init__()
+        super(SpikingNeuron, self).__init__()
 
         SpikingNeuron.instances.append(self)
-
-        if surrogate_disable:
-            self.spike_grad = self._surrogate_bypass
-        elif spike_grad == None:
-            self.spike_grad = atan()
-        else:
-            self.spike_grad = spike_grad
-
         self.init_hidden = init_hidden
         self.inhibition = inhibition
         self.output = output
@@ -67,6 +62,16 @@ class SpikingNeuron(nn.Module):
             learn_graded_spikes_factor=learn_graded_spikes_factor,
         )
         self._reset_mechanism = reset_mechanism
+        
+        self._refractory_factor = refractory_factor
+    
+        if spike_grad is None:
+            self.spike_grad = self.ATan.apply
+        else:
+            self.spike_grad = spike_grad
+
+        if self.surrogate_disable:
+            self.spike_grad = self._surrogate_bypass
 
         self.state_quant = state_quant
 
@@ -121,11 +126,12 @@ class SpikingNeuron(nn.Module):
         if (
             reset_mechanism != "subtract"
             and reset_mechanism != "zero"
+            and reset_mechanism != "refractory"
             and reset_mechanism != "none"
         ):
             raise ValueError(
                 "reset_mechanism must be set to either 'subtract', "
-                "'zero', or 'none'."
+                "'zero', 'refractory, 'or 'none'."
             )
 
     def _snn_register_buffer(
@@ -231,6 +237,66 @@ class SpikingNeuron(nn.Module):
     def _surrogate_bypass(input_):
         return (input_ > 0).float()
 
+    @staticmethod
+    class ATan(torch.autograd.Function):
+        """
+        Surrogate gradient of the Heaviside step function.
+
+        **Forward pass:** Heaviside step function shifted.
+
+            .. math::
+
+                S=\\begin{cases} 1 & \\text{if U ≥ U$_{\\rm thr}$} \\\\
+                0 & \\text{if U < U$_{\\rm thr}$}
+                \\end{cases}
+
+        **Backward pass:** Gradient of shifted arc-tan function.
+
+            .. math::
+
+                    S&≈\\frac{1}{π}\\text{arctan}(πU \\frac{α}{2}) \\\\
+                    \\frac{∂S}{∂U}&=\\frac{1}{π}\
+                    \\frac{1}{(1+(πU\\frac{α}{2})^2)}
+
+
+        :math:`alpha` defaults to 2, and can be modified by calling
+        ``surrogate.atan(alpha=2)``.
+
+        Adapted from:
+
+        *W. Fang, Z. Yu, Y. Chen, T. Masquelier, T. Huang, Y. Tian (2021)
+        Incorporating Learnable Membrane Time Constants to Enhance Learning
+        of Spiking Neural Networks. Proc. IEEE/CVF Int. Conf. Computer
+        Vision (ICCV), pp. 2661-2671.*"""
+
+        @staticmethod
+        def forward(ctx, input_, alpha=2.0):
+            ctx.save_for_backward(input_)
+            ctx.alpha = alpha
+            out = (input_ > 0).float()
+            return out
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            (input_,) = ctx.saved_tensors
+            grad_input = grad_output.clone()
+            grad = (
+                ctx.alpha
+                / 2
+                / (1 + (torch.pi / 2 * ctx.alpha * input_).pow_(2))
+                * grad_input
+            )
+            return grad, None
+
+    # def atan(alpha=2.0):
+    #     """ArcTan surrogate gradient enclosed with a parameterized slope."""
+    #     alpha = alpha
+
+    #     def inner(x):
+    #         return ATan.apply(x, alpha)
+
+    #     return inner
+
 
 class LIF(SpikingNeuron):
     """Parent class for leaky integrate and fire neuron models."""
@@ -250,6 +316,7 @@ class LIF(SpikingNeuron):
         output=False,
         graded_spikes_factor=1.0,
         learn_graded_spikes_factor=False,
+        refractory_factor=1,
     ):
         super().__init__(
             threshold,
@@ -263,6 +330,7 @@ class LIF(SpikingNeuron):
             output,
             graded_spikes_factor,
             learn_graded_spikes_factor,
+            refractory_factor,
         )
 
         self._lif_register_buffer(
@@ -270,6 +338,14 @@ class LIF(SpikingNeuron):
             learn_beta,
         )
         self._reset_mechanism = reset_mechanism
+
+        if spike_grad is None:
+            self.spike_grad = self.ATan.apply
+        else:
+            self.spike_grad = spike_grad
+
+        if self.surrogate_disable:
+            self.spike_grad = self._surrogate_bypass
 
     def _lif_register_buffer(
         self,
@@ -296,3 +372,116 @@ class LIF(SpikingNeuron):
             self.V = nn.Parameter(V)
         else:
             self.register_buffer("V", V)
+
+    @staticmethod
+    def init_leaky():
+        """
+        Used to initialize mem as an empty SpikeTensor.
+        ``init_flag`` is used as an attribute in the forward pass to convert
+        the hidden states to the same as the input.
+        """
+        mem = _SpikeTensor(init_flag=False)
+
+        return mem
+
+    @staticmethod
+    def init_rleaky():
+        """
+        Used to initialize spk and mem as an empty SpikeTensor.
+        ``init_flag`` is used as an attribute in the forward pass to convert
+        the hidden states to the same as the input.
+        """
+        spk = _SpikeTensor(init_flag=False)
+        mem = _SpikeTensor(init_flag=False)
+
+        return spk, mem
+
+    @staticmethod
+    def init_synaptic():
+        """Used to initialize syn and mem as an empty SpikeTensor.
+        ``init_flag`` is used as an attribute in the forward pass to convert
+        the hidden states to the same as the input.
+        """
+
+        syn = _SpikeTensor(init_flag=False)
+        mem = _SpikeTensor(init_flag=False)
+
+        return syn, mem
+
+    @staticmethod
+    def init_rsynaptic():
+        """
+        Used to initialize spk, syn and mem as an empty SpikeTensor.
+        ``init_flag`` is used as an attribute in the forward pass to convert
+        the hidden states to the same as the input.
+        """
+        spk = _SpikeTensor(init_flag=False)
+        syn = _SpikeTensor(init_flag=False)
+        mem = _SpikeTensor(init_flag=False)
+
+        return spk, syn, mem
+
+    @staticmethod
+    def init_lapicque():
+        """
+        Used to initialize mem as an empty SpikeTensor.
+        ``init_flag`` is used as an attribute in the forward pass to convert
+        the hidden states to the same as the input.
+        """
+
+        return LIF.init_leaky()
+
+    @staticmethod
+    def init_alpha():
+        """Used to initialize syn_exc, syn_inh and mem as an empty SpikeTensor.
+        ``init_flag`` is used as an attribute in the forward pass to convert
+        the hidden states to the same as the input.
+        """
+        syn_exc = _SpikeTensor(init_flag=False)
+        syn_inh = _SpikeTensor(init_flag=False)
+        mem = _SpikeTensor(init_flag=False)
+
+        return syn_exc, syn_inh, mem
+
+
+class _SpikeTensor(torch.Tensor):
+    """Inherits from torch.Tensor with additional attributes.
+    ``init_flag`` is set at the time of initialization.
+    When called in the forward function of any neuron, they are parsed and
+    replaced with a torch.Tensor variable.
+    """
+
+    @staticmethod
+    def __new__(cls, *args, init_flag=False, **kwargs):
+        return super().__new__(cls, *args, **kwargs)
+
+    def __init__(
+        self,
+        *args,
+        init_flag=True,
+    ):
+        # super().__init__() # optional
+        self.init_flag = init_flag
+
+
+def _SpikeTorchConv(*args, input_):
+    """Convert SpikeTensor to torch.Tensor of the same size as ``input_``."""
+
+    states = []
+    # if len(input_.size()) == 0:
+    #     _batch_size = 1  # assume batch_size=1 if 1D input
+    # else:
+    #     _batch_size = input_.size(0)
+    if (
+        len(args) == 1 and type(args) is not tuple
+    ):  # if only one hidden state, make it iterable
+        args = (args,)
+    for arg in args:
+        arg = arg.to("cpu")
+        arg = torch.Tensor(arg)  # wash away the SpikeTensor class
+        arg = torch.zeros_like(input_, requires_grad=True)
+        states.append(arg)
+    if len(states) == 1:  # otherwise, list isn't unpacked
+        return states[0]
+
+    return states

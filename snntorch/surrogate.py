@@ -75,7 +75,7 @@ class Triangular(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, input_, threshold):
+    def forward(ctx, input_, threshold=1):
         ctx.save_for_backward(input_)
         ctx.threshold = threshold
         out = (input_ > 0).float()
@@ -90,13 +90,12 @@ class Triangular(torch.autograd.Function):
         return grad, None
 
 
-def triangular(threshold=1):
+def triangular():
     """Triangular surrogate gradient enclosed with
     a parameterized threshold."""
-    threshold = threshold
 
     def inner(x):
-        return Triangular.apply(x, threshold)
+        return Triangular.apply(x)
 
     return inner
 
@@ -129,7 +128,7 @@ class FastSigmoid(torch.autograd.Function):
     Multilayer Spiking Neural Networks. Neural Computation, pp. 1514-1541.*"""
 
     @staticmethod
-    def forward(ctx, input_, slope):
+    def forward(ctx, input_, slope=25):
         ctx.save_for_backward(input_)
         ctx.slope = slope
         out = (input_ > 0).float()
@@ -184,7 +183,7 @@ class ATan(torch.autograd.Function):
     Int. Conf. Computer Vision (ICCV), pp. 2661-2671.*"""
 
     @staticmethod
-    def forward(ctx, input_, alpha):
+    def forward(ctx, input_, alpha=2.0):
         ctx.save_for_backward(input_)
         ctx.alpha = alpha
         out = (input_ > 0).float()
@@ -197,7 +196,7 @@ class ATan(torch.autograd.Function):
         grad = (
             ctx.alpha
             / 2
-            / (1 + (torch.pi / 2 * ctx.alpha * input_).pow_(2))
+            / (1 + (math.pi / 2 * ctx.alpha * input_).pow_(2))
             * grad_input
         )
         return grad, None
@@ -291,7 +290,7 @@ class Sigmoid(torch.autograd.Function):
     Neural Networks. Neural Computation, pp. 1514-1541.*"""
 
     @staticmethod
-    def forward(ctx, input_, slope):
+    def forward(ctx, input_, slope=25):
         ctx.save_for_backward(input_)
         ctx.slope = slope
         out = (input_ > 0).float()
@@ -351,7 +350,7 @@ class SpikeRateEscape(torch.autograd.Function):
     Cambridge University Press, 2002.*"""
 
     @staticmethod
-    def forward(ctx, input_, beta, slope):
+    def forward(ctx, input_, beta=1, slope=25):
         ctx.save_for_backward(input_)
         ctx.beta = beta
         ctx.slope = slope
@@ -376,7 +375,7 @@ def spike_rate_escape(beta=1, slope=25):
     slope = slope
 
     def inner(x):
-        return SpikeRateEscape.apply(x, beta, slope)
+        return SpikeRateEscape.apply(x, slope)
 
     return inner
 
@@ -429,7 +428,7 @@ class StochasticSpikeOperator(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, input_, mean, variance):
+    def forward(ctx, input_, mean=0, variance=0.2):
         out = (input_ > 0).float()
         ctx.save_for_backward(input_, out)
         ctx.mean = mean
@@ -491,7 +490,7 @@ class LeakySpikeOperator(torch.autograd.Function):
     The gradient is identical to that of a threshold-shifted Leaky ReLU."""
 
     @staticmethod
-    def forward(ctx, input_, slope):
+    def forward(ctx, input_, slope=0.1):
         out = (input_ > 0).float()
         ctx.save_for_backward(out)
         ctx.slope = slope
@@ -550,7 +549,7 @@ class SparseFastSigmoid(torch.autograd.Function):
     Gradient Descent. https://arxiv.org/pdf/2105.08810.pdf.*"""
 
     @staticmethod
-    def forward(ctx, input_, slope, B):
+    def forward(ctx, input_, slope=25, B=1):
         ctx.save_for_backward(input_)
         ctx.slope = slope
         ctx.B = B

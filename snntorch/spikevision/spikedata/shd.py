@@ -283,7 +283,7 @@ class SHD(NeuromorphicDataset):
                 [Repeat(num_steps), toOneHot(len(mapping))]
             )
 
-        super().__init__(
+        super(SHD, self).__init__(
             root=root + "/shd.hdf5",
             transform=transform,
             target_transform=target_transform,

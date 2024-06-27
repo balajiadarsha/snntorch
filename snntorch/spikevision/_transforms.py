@@ -303,7 +303,7 @@ class ExpFilterEvents(FilterEvents):
             kernel[i, 0, :, 0, 0] = exp_kernel
         kernel = kernel.to(device)
 
-        super().__init__(kernel, groups, tpad, **kwargs)
+        super(ExpFilterEvents, self).__init__(kernel, groups, tpad, **kwargs)
 
 
 class Rescale(object):
